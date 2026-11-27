@@ -86,3 +86,7 @@ Paste the Markdown and ask a narrow question, e.g. "Given this profile of the *O
 which three methods should I look at first and what is the likely cause in each?" Then paste only
 the source of those methods. For leaks: "Which of these retention paths is a bug, and where should
 the reference be released?"
+
+## License
+
+MIT, see [LICENSE](LICENSE).
