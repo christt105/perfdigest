@@ -1,0 +1,62 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-main.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        run: |
+          for rid in win-x64 linux-x64; do
+            dotnet publish src/PerfDigest -c Release -r "$rid" --self-contained \
+              -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
+              -p:Version=${{ steps.version.outputs.value }} -o "out/$rid"
+          done
+          ./out/linux-x64/PerfDigest --help > /dev/null
+          mkdir dist
+          cp out/win-x64/PerfDigest.exe dist/perfdigest-win-x64.exe
+          cp out/linux-x64/PerfDigest dist/perfdigest-linux-x64
+
+      - name: Release for tag
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+      - name: Rolling release for main
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/* --prerelease --target "$GITHUB_SHA" \
+            --title "Latest build from main" \
+            --notes "Automatic build of ${GITHUB_SHA::7}. Stable versions are the vX.Y.Z releases."

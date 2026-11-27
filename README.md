@@ -9,6 +9,11 @@ The raw formats (`.diagsession`, `.etl`, dumps) are huge and mostly noise; this 
 aggregation locally and only writes method and type names, so no source code or data leaves the
 machine unless you paste the report somewhere.
 
+## Download
+
+Prebuilt single-file executables (no .NET install needed) are on the [releases page](../../releases):
+`latest` is rebuilt on every push to `main`, `vX.Y.Z` releases come from tags.
+
 ## Build
 
 Needs the .NET 8 SDK or newer.
