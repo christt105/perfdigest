@@ -1,0 +1,7 @@
+bin/
+obj/
+*.etlx
+*.dmp
+*.nettrace
+*.diagsession
+core.*
