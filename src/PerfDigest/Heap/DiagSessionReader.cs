@@ -1,175 +1,192 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using PerfDigest.Cli;
 using PerfDigest.Markdown;
 
 namespace PerfDigest.Heap;
 
-public static class DiagSessionReader
+public static partial class DiagSessionReader
 {
-    public const string ResourceType = "MemoryProfiler.GCDump";
-    private static readonly byte[] FastSerializationMagic = "!FastSerialization"u8.ToArray();
-    private static readonly byte[] HeapDumpTypeName = "HeapDump"u8.ToArray();
-    private static readonly string[] PathNames = ["path", "relativepath", "location", "uri", "filename", "file", "name"];
+    private const string GcDumpType = "MemoryProfiler.GCDump";
+    private const string ManifestType = "MemoryProfiler.Manifest";
 
     public static IReadOnlyList<DiagSessionSnapshot> Extract(string diagSession, List<string> notes)
     {
-        var targetDir = Path.Combine(WorkDirectory.For([diagSession]), "gcdump");
-        using var zip = ZipFile.OpenRead(diagSession);
         var label = Path.GetFileName(diagSession);
-        var entries = zip.Entries.Where(e => e.Length > 0).ToList();
+        using var zip = ZipFile.OpenRead(diagSession);
+        var resources = Resources(zip);
+        var gcDumps = resources.Where(r => r.Type == GcDumpType && r.Entry is not null).ToList();
 
-        var declared = new List<(ZipArchiveEntry Entry, DateTime? Time, string TimeSource)>();
-        var manifests = new List<string>();
-        foreach (var manifest in entries.Where(e => e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
+        var ordered = FromVsManifest(resources, gcDumps, label, notes);
+        if (ordered is null)
         {
-            var found = ManifestResources(manifest, entries);
-            if (found.Count > 0)
+            var candidates = gcDumps.Count > 0
+                ? gcDumps.Select(r => (r.Entry!, r.Name)).ToList()
+                : zip.Entries.Where(e => e.Length > 0 && e.FullName.EndsWith(".gcdump", StringComparison.OrdinalIgnoreCase)).Select(e => (e, e.Name)).ToList();
+            ordered = candidates
+                .OrderBy(c => LeadingNumber(c.Name) ?? int.MaxValue)
+                .ThenBy(c => c.Item1.FullName, StringComparer.Ordinal)
+                .Select(c => (c.Item1, SnapshotName(c.Name), (DateTime?)null))
+                .ToList();
+            if (ordered.Count > 0)
             {
-                manifests.Add(manifest.FullName);
-                declared.AddRange(found.Where(f => declared.All(d => d.Entry != f.Entry)));
+                notes.Add($"{label}: no Memory Usage snapshot list found; {ordered.Count} .gcdump file(s) ordered by the number their name starts with.");
             }
         }
 
-        if (declared.Count > 0)
+        if (ordered.Count == 0)
         {
-            notes.Add($"{label}: {declared.Count} `{ResourceType}` resource(s) declared in {string.Join(", ", manifests)}.");
-        }
-        else
-        {
-            declared = entries.Where(LooksLikeGcDump).Select(e => (e, (DateTime?)null, "")).ToList();
-            notes.Add(declared.Count > 0
-                ? $"{label}: no `{ResourceType}` resource found in its XML manifests; using the {declared.Count} entr(ies) that contain a .gcdump."
-                : $"{label}: contains no managed heap snapshot. Entries: {string.Join("; ", entries.OrderByDescending(e => e.Length).Take(15).Select(e => $"{e.FullName} ({MarkdownBuilder.Bytes(e.Length)})"))}");
-        }
-
-        var result = new List<DiagSessionSnapshot>();
-        foreach (var (entry, time, timeSource) in declared)
-        {
-            var target = Path.Combine(targetDir, entry.FullName.Replace('/', '_').Replace('\\', '_'));
-            if (!File.Exists(target))
-            {
-                Directory.CreateDirectory(targetDir);
-                Progress.Info($"Extracting {entry.FullName} ({MarkdownBuilder.Bytes(entry.Length)})");
-                entry.ExtractToFile(target);
-            }
-
-            var resolved = time is null ? (entry.LastWriteTime.UtcDateTime, "archive entry time") : (time.Value, timeSource);
-            result.Add(new DiagSessionSnapshot(entry.FullName, target, resolved.Item1, resolved.Item2));
-        }
-
-        return result.OrderBy(r => r.Time).ThenBy(r => r.EntryName, StringComparer.Ordinal).ToList();
-    }
-
-    private static List<(ZipArchiveEntry Entry, DateTime? Time, string TimeSource)> ManifestResources(ZipArchiveEntry manifest, List<ZipArchiveEntry> entries)
-    {
-        XDocument doc;
-        try
-        {
-            using var stream = manifest.Open();
-            doc = XDocument.Load(stream);
-        }
-        catch (Exception)
-        {
+            notes.Add($"{label}: contains no managed heap snapshot. Entries: {string.Join("; ", zip.Entries.Where(e => e.Length > 0).OrderByDescending(e => e.Length).Take(15).Select(e => $"{e.FullName} ({MarkdownBuilder.Bytes(e.Length)})"))}");
             return [];
         }
 
-        var result = new List<(ZipArchiveEntry, DateTime?, string)>();
-        foreach (var element in doc.Descendants().Where(IsGcDumpResource))
+        var targetDir = Path.Combine(WorkDirectory.For([diagSession]), "gcdump");
+        var result = new List<DiagSessionSnapshot>();
+        foreach (var (entry, name, time) in ordered)
         {
-            var values = Values(element).ToList();
-            var entry = values.Where(v => PathNames.Contains(v.Name.ToLowerInvariant()))
-                .OrderBy(v => Array.IndexOf(PathNames, v.Name.ToLowerInvariant()))
-                .Select(v => FindEntry(v.Value, entries))
-                .FirstOrDefault(e => e is not null);
-            if (entry is null)
+            var target = Path.Combine(targetDir, entry.FullName.Replace('/', '_').Replace('\\', '_'));
+            if (!File.Exists(target) || new FileInfo(target).Length != entry.Length)
             {
-                continue;
+                Directory.CreateDirectory(targetDir);
+                Progress.Info($"Extracting {entry.FullName} ({MarkdownBuilder.Bytes(entry.Length)})");
+                entry.ExtractToFile(target, overwrite: true);
             }
 
-            var time = values.Where(v => IsTimeName(v.Name))
-                .Select(v => (v.Name, Value: ParseTime(v.Value)))
-                .FirstOrDefault(v => v.Value is not null);
-            result.Add((entry, time.Value, time.Value is null ? "" : $"manifest attribute {time.Name}"));
+            result.Add(new DiagSessionSnapshot(entry.FullName, target, name, time));
         }
 
         return result;
     }
 
-    private static bool IsGcDumpResource(XElement element) =>
-        element.Attributes().Any(a => a.Value == ResourceType)
-        || element.Elements().Any(c => !c.HasElements && c.Value.Trim() == ResourceType);
-
-    private static IEnumerable<(string Name, string Value)> Values(XElement element)
+    private static List<(ZipArchiveEntry Entry, string Name, DateTime? Time)>? FromVsManifest(
+        IReadOnlyList<DiagSessionResource> resources, IReadOnlyList<DiagSessionResource> gcDumps, string label, List<string> notes)
     {
-        foreach (var attribute in element.Attributes())
+        foreach (var manifest in resources.Where(r => r.Type == ManifestType && r.Entry is not null))
         {
-            yield return (attribute.Name.LocalName, attribute.Value);
-        }
-
-        foreach (var child in element.Descendants().Where(d => !d.HasElements))
-        {
-            yield return (child.Name.LocalName, child.Value.Trim());
-            foreach (var attribute in child.Attributes())
+            JsonDocument json;
+            try
             {
-                yield return (attribute.Name.LocalName, attribute.Value);
+                using var stream = manifest.Entry!.Open();
+                json = JsonDocument.Parse(stream);
             }
-        }
-    }
-
-    private static ZipArchiveEntry? FindEntry(string reference, List<ZipArchiveEntry> entries)
-    {
-        if (string.IsNullOrWhiteSpace(reference))
-        {
-            return null;
-        }
-
-        var normalized = Uri.UnescapeDataString(reference).Replace('\\', '/').TrimStart('/');
-        return entries.FirstOrDefault(e => string.Equals(e.FullName, normalized, StringComparison.OrdinalIgnoreCase))
-               ?? entries.FirstOrDefault(e => e.FullName.EndsWith("/" + normalized, StringComparison.OrdinalIgnoreCase))
-               ?? entries.FirstOrDefault(e => normalized.Contains('/') && string.Equals(Path.GetFileName(e.FullName), Path.GetFileName(normalized), StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsTimeName(string name) =>
-        name.Contains("time", StringComparison.OrdinalIgnoreCase) || name.Contains("date", StringComparison.OrdinalIgnoreCase);
-
-    private static DateTime? ParseTime(string value)
-    {
-        if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
-        {
-            return parsed;
-        }
-
-        if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) && number > 0)
-        {
-            if (number > DateTime.MinValue.Ticks && number < DateTime.MaxValue.Ticks && number > new DateTime(1990, 1, 1).Ticks)
+            catch (JsonException)
             {
-                return new DateTime(number, DateTimeKind.Utc);
+                continue;
             }
 
-            return number < 1_000_000_000_000_000 ? null : DateTime.FromFileTimeUtc(number);
+            using (json)
+            {
+                if (!json.RootElement.TryGetProperty("Snapshots", out var snapshots) || snapshots.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                var result = new List<(ZipArchiveEntry, string, DateTime?, long)>();
+                var missing = new List<string>();
+                foreach (var snapshot in snapshots.EnumerateArray())
+                {
+                    var name = String(snapshot, "Name") ?? "?";
+                    var order = snapshot.TryGetProperty("SnapshotTime", out var t) && t.TryGetInt64(out var ticks) ? ticks : long.MaxValue;
+                    var heaps = snapshot.TryGetProperty("Heaps", out var h) && h.ValueKind == JsonValueKind.Array ? h.EnumerateArray().ToList() : [];
+                    var files = heaps.Select(heap => (Heap: heap, File: String(heap, "GCDumpFileName"))).Where(x => x.File is not null).ToList();
+                    if (files.Count == 0)
+                    {
+                        missing.Add(name);
+                        continue;
+                    }
+
+                    foreach (var (heap, file) in files)
+                    {
+                        var resource = gcDumps.FirstOrDefault(r => string.Equals(r.Name, file, StringComparison.OrdinalIgnoreCase));
+                        if (resource is null)
+                        {
+                            missing.Add(name);
+                            continue;
+                        }
+
+                        result.Add((resource.Entry!, name, StartTime(heap), order));
+                    }
+                }
+
+                if (result.Count == 0)
+                {
+                    continue;
+                }
+
+                notes.Add($"{label}: {result.Count} snapshot(s) in the order Visual Studio took them (its Memory Usage snapshot list, `{manifest.Entry!.FullName}`).");
+                if (missing.Count > 0)
+                {
+                    notes.Add($"⚠ {label}: Visual Studio snapshot(s) {string.Join(", ", missing)} have no managed heap file in the session, so they are not in this comparison and the step across them covers two intervals.");
+                }
+
+                return result.OrderBy(r => r.Item4).Select(r => (r.Item1, r.Item2, r.Item3)).ToList();
+            }
         }
 
         return null;
     }
 
-    private static bool LooksLikeGcDump(ZipArchiveEntry entry)
+    private static List<DiagSessionResource> Resources(ZipArchive zip)
     {
-        if (entry.FullName.EndsWith(".gcdump", StringComparison.OrdinalIgnoreCase))
+        var entries = zip.Entries.Where(e => e.Length > 0).ToList();
+        var result = new List<DiagSessionResource>();
+        foreach (var metadata in entries.Where(e => e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
         {
-            return true;
+            XDocument doc;
+            try
+            {
+                using var stream = metadata.Open();
+                doc = XDocument.Load(stream);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            foreach (var resource in doc.Descendants().Where(d => d.Name.LocalName == "Resource"))
+            {
+                var type = (string?)resource.Attribute("Type") ?? "";
+                var name = (string?)resource.Attribute("Name") ?? "";
+                var prefix = (string?)resource.Attribute("ResourcePackageUriPrefix") ?? "";
+                var path = prefix.Length > 0 ? $"{prefix.Trim('/')}/{name}" : name;
+                var entry = entries.FirstOrDefault(e => string.Equals(e.FullName, path, StringComparison.OrdinalIgnoreCase))
+                            ?? entries.FirstOrDefault(e => name.Length > 0 && string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+                result.Add(new DiagSessionResource(type, name, entry));
+            }
         }
 
-        if (entry.Length < 64)
-        {
-            return false;
-        }
-
-        using var stream = entry.Open();
-        var header = new byte[128];
-        var read = stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
-        var span = header.AsSpan(0, read);
-        return span.IndexOf(FastSerializationMagic) >= 0 && span.IndexOf(HeapDumpTypeName) >= 0;
+        return result;
     }
+
+    private static string? String(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static DateTime? StartTime(JsonElement heap)
+    {
+        if (!heap.TryGetProperty("StartTime", out var value) || !value.TryGetInt64(out var ticks))
+        {
+            return null;
+        }
+
+        var min = new DateTime(2000, 1, 1).Ticks;
+        var max = new DateTime(2100, 1, 1).Ticks;
+        return ticks > min && ticks < max ? new DateTime(ticks, DateTimeKind.Utc) : null;
+    }
+
+    private static string SnapshotName(string fileName) =>
+        LeadingNumber(fileName)?.ToString(CultureInfo.InvariantCulture) ?? Path.GetFileNameWithoutExtension(fileName);
+
+    private static int? LeadingNumber(string fileName)
+    {
+        var match = LeadingNumberPattern().Match(fileName);
+        return match.Success && int.TryParse(match.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var number) ? number : null;
+    }
+
+    [GeneratedRegex(@"^\d+")]
+    private static partial Regex LeadingNumberPattern();
 }

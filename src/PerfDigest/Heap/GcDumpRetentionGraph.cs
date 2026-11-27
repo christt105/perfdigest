@@ -4,7 +4,7 @@ namespace PerfDigest.Heap;
 
 public sealed class GcDumpRetentionGraph(MemoryGraph graph, NodeIndex[] parents) : IRetentionGraph
 {
-    private const int MaxHops = 14;
+    private const int MaxHops = 24;
 
     public static bool IsPseudoNode(string typeName) => typeName.StartsWith('[');
 
@@ -18,24 +18,50 @@ public sealed class GcDumpRetentionGraph(MemoryGraph graph, NodeIndex[] parents)
         }
 
         var node = graph.AllocNodeStorage();
-        var queue = new Queue<NodeIndex>();
+        var type = graph.AllocTypeNodeStorage();
         parents[(int)graph.RootIndex] = graph.RootIndex;
-        queue.Enqueue(graph.RootIndex);
-        while (queue.Count > 0)
+        var categories = Children(graph, graph.RootIndex, node)
+            .GroupBy(c => GcDumpRootKind.Priority(graph.GetType(graph.GetNode(c, node).TypeIndex, type).Name ?? ""))
+            .OrderBy(g => g.Key);
+        var queue = new Queue<NodeIndex>();
+        foreach (var category in categories)
         {
-            var current = queue.Dequeue();
-            graph.GetNode(current, node);
-            for (var child = node.GetFirstChildIndex(); child != NodeIndex.Invalid; child = node.GetNextChildIndex())
+            foreach (var child in category.Where(c => parents[(int)c] == NodeIndex.Invalid))
             {
-                if (child >= 0 && (int)child < parents.Length && parents[(int)child] == NodeIndex.Invalid)
+                parents[(int)child] = graph.RootIndex;
+                queue.Enqueue(child);
+            }
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                foreach (var child in Children(graph, current, node))
                 {
-                    parents[(int)child] = current;
-                    queue.Enqueue(child);
+                    if (parents[(int)child] == NodeIndex.Invalid)
+                    {
+                        parents[(int)child] = current;
+                        queue.Enqueue(child);
+                    }
                 }
             }
         }
 
         return parents;
+    }
+
+    private static List<NodeIndex> Children(MemoryGraph graph, NodeIndex index, Node storage)
+    {
+        graph.GetNode(index, storage);
+        var children = new List<NodeIndex>();
+        for (var child = storage.GetFirstChildIndex(); child != NodeIndex.Invalid; child = storage.GetNextChildIndex())
+        {
+            if (child >= 0 && child < graph.NodeIndexLimit)
+            {
+                children.Add(child);
+            }
+        }
+
+        return children;
     }
 
     public string Describe(ulong sample)
@@ -61,7 +87,7 @@ public sealed class GcDumpRetentionGraph(MemoryGraph graph, NodeIndex[] parents)
         var node = graph.AllocNodeStorage();
         var names = chain.Select(index => GcDumpScanner.TypeName(graph.GetType(graph.GetNode(index, node).TypeIndex, type).Name)).ToList();
         var firstReal = names.FindIndex(n => !IsPseudoNode(n));
-        var rootLabels = names.Take(firstReal < 0 ? names.Count : firstReal).Skip(1).Select(n => n.Trim('[', ']')).ToList();
+        var rootLabels = names.Take(firstReal < 0 ? names.Count : firstReal).Skip(1).Select(GcDumpRootKind.Label).ToList();
         var lines = new List<string> { $"root: {(rootLabels.Count > 0 ? string.Join(" / ", rootLabels) : "?")}" };
         if (firstReal >= 0)
         {
@@ -70,7 +96,7 @@ public sealed class GcDumpRetentionGraph(MemoryGraph graph, NodeIndex[] parents)
 
         if (lines.Count > MaxHops + 1)
         {
-            lines = [.. lines.Take(5), $"… {lines.Count - 13} more …", .. lines.TakeLast(8)];
+            lines = [.. lines.Take(8), $"… {lines.Count - 20} more …", .. lines.TakeLast(12)];
         }
 
         return lines.Select((line, i) => new string(' ', Math.Min(i, 12) * 2) + line).ToList();

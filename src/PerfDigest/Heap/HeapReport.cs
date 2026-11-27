@@ -109,7 +109,7 @@ public static class HeapReport
         {
             var i = step;
             md.Line();
-            md.Line($"**#{i} → #{i + 1}** ({snapshots[i - 1].File} → {snapshots[i].File}): {MarkdownBuilder.Signed(snapshots[i].ObjectCount - snapshots[i - 1].ObjectCount)} objects, {MarkdownBuilder.SignedBytes(snapshots[i].TotalSize - snapshots[i - 1].TotalSize)}");
+            md.Line($"**{snapshots[i - 1].File} → {snapshots[i].File}**: {MarkdownBuilder.Signed(snapshots[i].ObjectCount - snapshots[i - 1].ObjectCount)} objects, {MarkdownBuilder.SignedBytes(snapshots[i].TotalSize - snapshots[i - 1].TotalSize)}");
             md.Line();
             md.Table(["Type", "Count", "Count diff", "Size (bytes)", "Size diff (bytes)"], growth
                 .Where(g => g.Counts[i] > g.Counts[i - 1])
@@ -148,6 +148,7 @@ public static class HeapReport
             : "Shortest path from a GC root to one instance, in the last snapshot (.gcdump stores references but not field names). Look for"
               + " the first link that should have been removed: an event, a static/cached collection, a timer or a parent that outlives the object.");
         md.Line();
+        var printed = new List<(string Type, IReadOnlyList<string> Lines)>();
         foreach (var (type, samples) in targets)
         {
             if (samples.Count == 0)
@@ -155,8 +156,32 @@ public static class HeapReport
                 continue;
             }
 
+            var lines = graph.Path(samples[0]);
+            var (sharedType, common) = ((string?)null, 0);
+            foreach (var (previousType, previousLines) in printed)
+            {
+                var length = previousLines.Zip(lines).TakeWhile(pair => pair.First == pair.Second).Count();
+                if (length > common)
+                {
+                    (sharedType, common) = (previousType, length);
+                }
+            }
+
             md.Line($"**{NameShortener.Type(type)}** ({graph.Describe(samples[0])}):");
-            md.Code(graph.Path(samples[0]));
+            if (sharedType is not null && common >= lines.Count)
+            {
+                md.Code([$"(on the path of {NameShortener.Type(sharedType)} above)"]);
+            }
+            else if (sharedType is not null && common >= 4)
+            {
+                md.Code([$"(same path as {NameShortener.Type(sharedType)} down to {lines[common - 1].Trim().TrimStart('→', ' ')})", .. lines.Skip(common)]);
+            }
+            else
+            {
+                md.Code(lines);
+            }
+
+            printed.Add((type, lines));
         }
     }
 

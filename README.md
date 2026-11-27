@@ -75,10 +75,12 @@ Inputs (do not mix memory dumps with the other two, they name and count types di
   Task Manager → right click the process → *Create memory dump file*, `procdump -ma <pid>`, or
   `dotnet-dump collect -p <pid>`. Analyze them on the same OS family that produced them (Windows
   dumps on Windows), since ClrMD loads the runtime's data access library from that platform.
-- **Visual Studio `.diagsession`** from the *Memory Usage* tool: every `MemoryProfiler.GCDump`
-  resource declared in the session's XML manifest is extracted and the snapshots are ordered by the
-  time recorded there (the archive entry time if the manifest has none). The report says which entry
-  each snapshot is and where its time came from. Several `.diagsession` files can be passed.
+- **Visual Studio `.diagsession`** from the *Memory Usage* tool: the snapshots are taken in the
+  order of VS's own snapshot list (the `MemoryProfiler.Manifest` resource), with their names and
+  capture times. The packaging time in `metadata.xml` is not the capture order and is not used.
+  Snapshots VS lists without a managed heap file are reported as missing. Without that list, the
+  `.gcdump` files are ordered by the number their name starts with. Several `.diagsession` files
+  can be passed.
 - **`.gcdump`** from `dotnet-gcdump collect -p <pid>`, PerfView, or a snapshot saved from VS. Any OS.
 
 Recipe:
@@ -97,7 +99,11 @@ to one instance in the last snapshot.
 
 Differences by format: dumps also give delegate targets that grew (event handlers that were never
 removed) and field names on the retention path; `.gcdump` stores neither, so its paths list types
-only and start at the root kind (`static var X.Field`, `local vars`, `handles`...). PerfView splits
+only and start at the root kind (`static var X.Field` from PerfView/dotnet-gcdump; strong, pinned,
+stack... handles from VS). Paths prefer strong roots: an object reached only through a dependent
+handle (`ConditionalWeakTable`, weak event patterns) is alive only while its owner is, so that path
+is shown only when there is no other. Paths that repeat an earlier one are shortened to the part
+that differs. PerfView splits
 large arrays into size buckets such as `Byte[] (Bytes > 1K)`; they are merged back into one type,
 as VS shows them. If the snapshot was sampled (very large heaps), counts and sizes are scaled by the
 sampling multipliers and the overview says so.

@@ -7,18 +7,18 @@ public static class SnapshotResolver
     public static IReadOnlyList<SnapshotSource> Resolve(IReadOnlyList<string> inputs, List<string> notes)
     {
         var sources = new List<SnapshotSource>();
+        var onlyOneSession = inputs.Count == 1;
         foreach (var input in inputs)
         {
             if (input.EndsWith(".diagsession", StringComparison.OrdinalIgnoreCase))
             {
                 var name = Path.GetFileName(input);
-                var snapshots = DiagSessionReader.Extract(input, notes);
-                sources.AddRange(snapshots.Select((s, i) => new SnapshotSource(
+                sources.AddRange(DiagSessionReader.Extract(input, notes).Select(s => new SnapshotSource(
                     s.ExtractedPath,
-                    snapshots.Count == 1 ? name : $"{name} #{i + 1}",
+                    onlyOneSession ? $"snapshot {s.SnapshotName}" : $"{name} snapshot {s.SnapshotName}",
                     SnapshotFormat.GcDump,
                     s.Time,
-                    $"`{s.EntryName}`, time from {s.TimeSource}")));
+                    $"`{s.EntryName}`")));
             }
             else
             {
