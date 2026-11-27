@@ -2,8 +2,8 @@
 
 Turns .NET profiling data into a compact Markdown report (usually 5-15 KB) that an LLM can read
 without getting lost: time per method of your own code, hot call paths, GC pauses, allocations,
-exceptions, and heap growth between memory dumps with the retention path that keeps leaked objects
-alive.
+exceptions, and heap growth between memory dumps or Visual Studio/dotnet-gcdump heap snapshots with
+the retention path that keeps leaked objects alive.
 
 The raw formats (`.diagsession`, `.etl`, dumps) are huge and mostly noise; this tool does the
 aggregation locally and only writes method and type names, so no source code or data leaves the
@@ -64,26 +64,43 @@ managed code needs no symbols.
 
 ```
 perfdigest heap before.dmp after1.dmp after2.dmp --focus MyCompany. --out leaks.md
+perfdigest heap memory.diagsession --focus MyCompany.
+perfdigest heap s1.gcdump s2.gcdump s3.gcdump
 perfdigest heap one.dmp
 ```
+
+Inputs (do not mix memory dumps with the other two, they name and count types differently):
+
+- **Memory dumps** (`.dmp`, core dumps): read with ClrMD. Works for .NET Framework and .NET Core.
+  Task Manager → right click the process → *Create memory dump file*, `procdump -ma <pid>`, or
+  `dotnet-dump collect -p <pid>`. Analyze them on the same OS family that produced them (Windows
+  dumps on Windows), since ClrMD loads the runtime's data access library from that platform.
+- **Visual Studio `.diagsession`** from the *Memory Usage* tool: every `MemoryProfiler.GCDump`
+  resource declared in the session's XML manifest is extracted and the snapshots are ordered by the
+  time recorded there (the archive entry time if the manifest has none). The report says which entry
+  each snapshot is and where its time came from. Several `.diagsession` files can be passed.
+- **`.gcdump`** from `dotnet-gcdump collect -p <pid>`, PerfView, or a snapshot saved from VS. Any OS.
 
 Recipe:
 
 1. Start the app and do the suspicious action once (warms up caches and lazy singletons).
-2. Take dump 1. Repeat the action N times (open/close the same window, load the same document...).
-3. Take dump 2. Repeat N times again, take dump 3.
+2. Take snapshot 1 (VS: *Take snapshot*). Repeat the action N times (open/close the same window, load
+   the same document...).
+3. Take snapshot 2. Repeat N times again, take snapshot 3.
 
-Dumps: Task Manager → right click the process → *Create memory dump file*, `procdump -ma <pid>`,
-or `dotnet-dump collect -p <pid>` for .NET Core. Works for .NET Framework and .NET Core.
+Only objects reachable from GC roots are counted (for dumps, pass `--include-dead` to count garbage
+too; `.gcdump` only stores live objects). The report shows your types that grew (✔ marks growth in
+every step, the strongest leak signal), all types by size growth, every type that grew in every
+step, a per-step table against the previous snapshot (the same Count Diff / Size Diff that VS shows
+when you compare snapshot N with N-1), and for the top candidates the shortest path from a GC root
+to one instance in the last snapshot.
 
-Only objects reachable from GC roots are counted (garbage not yet collected is ignored; pass
-`--include-dead` to count it). The report shows your types that grew (✔ marks growth in every step,
-the strongest leak signal), all types by size growth, delegate targets that grew (event handlers
-that were never removed), and for the top candidates the shortest path from a GC root or static
-field to one instance in the last dump.
-
-Analyze dumps on the same OS family that produced them (Windows dumps on Windows), since ClrMD
-loads the runtime's data access library from that platform.
+Differences by format: dumps also give delegate targets that grew (event handlers that were never
+removed) and field names on the retention path; `.gcdump` stores neither, so its paths list types
+only and start at the root kind (`static var X.Field`, `local vars`, `handles`...). PerfView splits
+large arrays into size buckets such as `Byte[] (Bytes > 1K)`; they are merged back into one type,
+as VS shows them. If the snapshot was sampled (very large heaps), counts and sizes are scaled by the
+sampling multipliers and the overview says so.
 
 ## Using the report with an LLM
 
@@ -94,4 +111,5 @@ the reference be released?"
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). `src/ThirdParty/PerfView.HeapDump` holds unmodified MIT-licensed
+files from PerfView (via dotnet/diagnostics) that read the `.gcdump` format; see its README.

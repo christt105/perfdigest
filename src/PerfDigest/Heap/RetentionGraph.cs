@@ -2,12 +2,12 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace PerfDigest.Heap;
 
-public sealed class RetentionGraph(DataTarget target, ClrRuntime runtime, Dictionary<ulong, ulong> parents, Dictionary<ulong, ClrRootKind> rootKinds) : IDisposable
+public sealed class RetentionGraph(DataTarget target, ClrRuntime runtime, Dictionary<ulong, ulong> parents, Dictionary<ulong, ClrRootKind> rootKinds) : IRetentionGraph
 {
     private const int MaxHops = 14;
     private Dictionary<ulong, string>? statics;
 
-    public ClrHeap Heap => runtime.Heap;
+    public string Describe(ulong sample) => $"instance 0x{sample:x}";
 
     public IReadOnlyList<string> Path(ulong address)
     {

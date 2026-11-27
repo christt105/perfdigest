@@ -43,6 +43,16 @@ public sealed class CodeClassifier
         return !ExternalPrefixes.Any(p => methodName.StartsWith(p, StringComparison.Ordinal));
     }
 
+    public bool IsOwnType(string typeName, string? modulePath)
+    {
+        if (focus.Length == 0 && !string.IsNullOrEmpty(modulePath) && IsExternalModule(ModuleName(modulePath)))
+        {
+            return false;
+        }
+
+        return IsOwnType(typeName);
+    }
+
     public bool IsOwnType(string typeName)
     {
         if (focus.Length > 0)
@@ -52,6 +62,13 @@ public sealed class CodeClassifier
 
         return !typeName.Contains('.') ? !IsPrimitiveLike(typeName)
             : !ExternalPrefixes.Any(p => typeName.StartsWith(p, StringComparison.Ordinal));
+    }
+
+    private static string ModuleName(string modulePath)
+    {
+        var name = modulePath.Replace('\\', '/');
+        name = name[(name.LastIndexOf('/') + 1)..];
+        return name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
     }
 
     private static bool IsExternalModule(string moduleName)

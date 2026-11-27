@@ -1,6 +1,4 @@
 using System.IO.Compression;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using PerfDigest.Cli;
@@ -13,7 +11,7 @@ public static class TraceLoader
     public static TraceInput Load(IReadOnlyList<string> inputs)
     {
         var notes = new List<string>();
-        var workDir = WorkDirectory(inputs);
+        var workDir = WorkDirectory.For(inputs);
         var files = new List<string>();
         foreach (var input in inputs)
         {
@@ -100,17 +98,4 @@ public static class TraceLoader
 
     private static bool IsTraceFile(string name) =>
         name.EndsWith(".etl", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase);
-
-    private static string WorkDirectory(IReadOnlyList<string> inputs)
-    {
-        var key = string.Join("|", inputs.Select(i =>
-        {
-            var info = new FileInfo(i);
-            return $"{info.FullName}:{info.Length}:{info.LastWriteTimeUtc.Ticks}";
-        }));
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..16];
-        var dir = Path.Combine(Path.GetTempPath(), "perfdigest", hash);
-        Directory.CreateDirectory(dir);
-        return dir;
-    }
 }

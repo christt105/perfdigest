@@ -81,7 +81,7 @@ public sealed class MarkdownBuilder
 
     private static readonly HashSet<string> NumericHeaders =
     [
-        "ms", "%", "% of method", "Samples", "Count", "Counts", "Objects", "Finalizable", "Size", "Size now",
+        "ms", "%", "% of method", "Samples", "Count", "Counts", "Objects", "Finalizable", "Size", "Size now", "Count diff", "Size (bytes)", "Size diff (bytes)",
         "GCs", "Pause ms", "Max pause ms", "At ms", "Heap after MB", "Gen2 after MB", "LOH after MB",
     ];
 

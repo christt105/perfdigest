@@ -7,9 +7,10 @@ public static class HeapScanner
 {
     private const int SamplesPerType = 3;
 
-    public static (HeapSnapshot Snapshot, RetentionGraph? Graph) Scan(string path, bool includeDead, bool keepGraph)
+    public static (HeapSnapshot Snapshot, IRetentionGraph? Graph) Scan(SnapshotSource source, bool includeDead, bool keepGraph)
     {
-        Progress.Info($"Opening {Path.GetFileName(path)}...");
+        var path = source.Path;
+        Progress.Info($"Opening {source.Label}...");
         var target = DataTarget.LoadDump(path);
         var clr = target.ClrVersions.FirstOrDefault()
                   ?? throw new UsageException($"{path} has no .NET runtime loaded (is it a dump of a .NET process?).");
@@ -55,7 +56,15 @@ public static class HeapScanner
             }
         }
 
-        var snapshot = new HeapSnapshot { File = Path.GetFileName(path), Runtime = clr.Version.Major > 0 ? $"{clr.Flavor} {clr.Version}" : clr.Flavor.ToString(), LiveOnly = !includeDead };
+        var snapshot = new HeapSnapshot
+        {
+            File = source.Label,
+            Runtime = clr.Version.Major > 0 ? $"{clr.Flavor} {clr.Version}" : clr.Flavor.ToString(),
+            LiveOnly = !includeDead,
+            Format = SnapshotFormat.Dump,
+            Time = source.Time,
+            HasDelegates = true,
+        };
         var objects = includeDead ? heap.EnumerateObjects() : parents.Keys.Select(heap.GetObject);
         var delegateTypes = new Dictionary<ulong, bool>();
         Progress.Info("Counting objects by type...");
@@ -71,6 +80,10 @@ public static class HeapScanner
             {
                 stat = new TypeStat();
                 snapshot.Types[name] = stat;
+                if (obj.Type.Module?.Name is { Length: > 0 } module)
+                {
+                    snapshot.Modules[name] = module;
+                }
             }
 
             stat.Count++;

@@ -15,12 +15,14 @@ public static class Usage
           --symbols <path>      symbol path to resolve native/precompiled frames, e.g. C:\MyApp\bin;srv*C:\Symbols
           --from <ms> --to <ms> only analyze this time window (ms from trace start)
 
-        perfdigest heap <dump1> [<dump2> ...] [options]
-          one dump: live heap summary; two or more (oldest first): growth diff to find leaks
+        perfdigest heap <snapshot1> [<snapshot2> ...] [options]
+          snapshots: .dmp memory dumps, .gcdump files, or a .diagsession with Visual Studio
+                                Memory Usage snapshots (expanded in the order they were taken)
+          one snapshot: live heap summary; two or more (oldest first): growth diff to find leaks
           --top <n>             rows per table (default 30)
           --focus <prefixes>    namespace prefixes that count as "your code" (highlighted, own table)
           --roots <n>           growing types to explain with a retention path (default 8)
-          --include-dead        count unreachable objects too (default: live objects only)
+          --include-dead        count unreachable objects too (default: live objects only; .dmp only)
 
         Common:
           --out <file>          write the report there instead of stdout

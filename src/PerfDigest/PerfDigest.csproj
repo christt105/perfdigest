@@ -15,4 +15,8 @@
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="../ThirdParty/PerfView.HeapDump/PerfView.HeapDump.csproj" />
+  </ItemGroup>
+
 </Project>
